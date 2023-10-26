@@ -155,4 +155,31 @@ impl File for OSInode {
         }
         total_write_size
     }
+
+    fn get_stat(&self, stat: &mut super::Stat) -> isize {
+        let inner = self.inner.exclusive_access();
+        (stat.dev, stat.ino, stat.mode, stat.nlink) = (
+            0,
+            0,
+            match inner.inode.get_inode_type() {
+                easy_fs::DiskInodeType::File => super::StatMode::FILE,
+                easy_fs::DiskInodeType::Directory => super::StatMode::DIR,
+            },
+            inner.inode.link_num(),
+        );
+        0
+    }
+}
+
+/// link
+pub fn link(old_name: &str, new_name: &str) -> isize {
+    if old_name == new_name {
+        return -1;
+    }
+    ROOT_INODE.link(old_name, new_name)
+}
+
+/// unlink
+pub fn unlink(name: &str) -> isize {
+    ROOT_INODE.unlink(name)
 }

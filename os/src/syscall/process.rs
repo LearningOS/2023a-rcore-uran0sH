@@ -5,11 +5,13 @@ use alloc::sync::Arc;
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{translate_mut_ptr, translated_refmut, translated_str, MapPermission, VirtAddr},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,
+        add_task, alloc_new_frames, check_all_allocated, check_allocated, current_task,
+        current_user_token, dealloc_frames, exit_current_and_run_next, set_priority,
         suspend_current_and_run_next, TaskStatus,
     },
+    timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -79,7 +81,11 @@ pub fn sys_exec(path: *const u8) -> isize {
 /// If there is not a child process whose pid is same as given, return -1.
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    //trace!("kernel: sys_waitpid");
+    trace!(
+        "kernel::pid[{}] sys_waitpid [{}]",
+        current_task().unwrap().pid.0,
+        pid
+    );
     let task = current_task().unwrap();
     // find a child process
 
@@ -117,41 +123,84 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    trace!("kernel: sys_get_time");
+    let us = get_time_us();
+    let ts_ptr = translate_mut_ptr(current_user_token(), ts);
+    if ts_ptr.is_none() {
+        return -1;
+    }
+    let ts_ptr = ts_ptr.unwrap();
+    unsafe {
+        *ts_ptr = TimeVal {
+            sec: us / 1_000_000,
+            usec: us % 1_000_000,
+        };
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
-pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
+    trace!("kernel: sys_task_info");
+    let ti_ptr = translate_mut_ptr(current_user_token(), ti);
+    if ti_ptr.is_none() {
+        return -1;
+    }
+    let ti_ptr = ti_ptr.unwrap();
+    unsafe {
+        (*ti_ptr).status = TaskStatus::Running;
+        (*ti_ptr).time = get_time_ms();
+        (*ti_ptr).syscall_times = current_task().unwrap().get_current_syscall_times();
+        return 0;
+    }
 }
 
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+const MAX_ALLOC_MEMORY: usize = 1024 * 1024 * 1024;
+
+// YOUR JOB: Implement mmap.
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
+    trace!("kernel: sys_mmap");
+    // check port
+    if port & !0x7 != 0 || port & 0x7 == 0 {
+        return -1;
+    }
+    // check len
+    if len > MAX_ALLOC_MEMORY {
+        return -1;
+    }
+    let virt_addr_start: VirtAddr = start.into();
+    let virt_addr_end: VirtAddr = (start + len).into();
+    // check addr align
+    if !virt_addr_start.aligned() {
+        return -1;
+    }
+    // check if allocated
+    if check_allocated(virt_addr_start, virt_addr_end) {
+        return -1;
+    }
+    // allocate
+    let per = MapPermission::from_bits(((port << 1) | 16) as u8).unwrap();
+    alloc_new_frames(virt_addr_start, virt_addr_end, per);
+    return 0;
 }
 
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+// YOUR JOB: Implement munmap.
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    trace!("kernel: sys_munmap");
+    let virt_addr_start: VirtAddr = start.into();
+    let virt_addr_end: VirtAddr = (start + len).into();
+    if !virt_addr_start.aligned() {
+        return -1;
+    }
+    // check
+    if !check_all_allocated(virt_addr_start, virt_addr_end) {
+        return -1;
+    }
+    dealloc_frames(virt_addr_start, virt_addr_end);
+    0
 }
 
 /// change data segment size
@@ -166,19 +215,30 @@ pub fn sys_sbrk(size: i32) -> isize {
 
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+pub fn sys_spawn(path: *const u8) -> isize {
+    trace!("kernel:pid[{}] sys_spawn", current_task().unwrap().pid.0);
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let data = app_inode.read_all();
+        let task = current_task().unwrap();
+        let next = task.spawn(data.as_slice());
+        let pid = next.pid.0 as isize;
+        add_task(next);
+
+        return pid;
+    }
     -1
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
+    if prio >= 2 && prio <= isize::MAX {
+        return set_priority(prio);
+    }
     -1
 }
