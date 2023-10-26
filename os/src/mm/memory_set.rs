@@ -63,6 +63,49 @@ impl MemorySet {
             None,
         );
     }
+
+    /// delete framed area
+    pub fn delete_framed_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) {
+        let vpn_start = start_va.floor();
+        let vpn_end = end_va.ceil();
+        let mut index = 0;
+        for (i, map) in self.areas.iter_mut().enumerate() {
+            if map.vpn_range.get_start() == vpn_start && map.vpn_range.get_end() == vpn_end {
+                map.unmap(&mut self.page_table);
+                index = i;
+                break;
+            }
+            continue;
+        }
+        self.areas.remove(index);
+    }
+
+    /// check allocated
+    pub fn check_allocated(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+        for area in &self.areas {
+            if area.vpn_range.get_end() <= start_vpn || area.vpn_range.get_start() >= end_vpn {
+                continue;
+            } else {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// check all allocated
+    pub fn check_all_allocated(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+        for area in &self.areas {
+            if area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn {
+                return true;
+            }
+        }
+        false
+    }
+
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {

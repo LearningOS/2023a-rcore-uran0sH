@@ -1,6 +1,6 @@
 //! Types related to task management
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
@@ -28,6 +28,9 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The task's syscall times.
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlock {
@@ -63,6 +66,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_times: [0; MAX_SYSCALL_NUM],
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -95,6 +99,26 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// alloc new frames
+    pub fn alloc_new_frames(&mut self, start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        self.memory_set.insert_framed_area(start, end, permission);
+    }
+
+    /// dealloc frames
+    pub fn dealloc_frames(&mut self, start: VirtAddr, end: VirtAddr) {
+        self.memory_set.delete_framed_area(start, end);
+    }
+
+    /// check allocated
+    pub fn check_allocated(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        self.memory_set.check_allocated(start, end)
+    }
+
+    /// check all allocated
+    pub fn check_all_allocated(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        self.memory_set.check_all_allocated(start, end)
     }
 }
 

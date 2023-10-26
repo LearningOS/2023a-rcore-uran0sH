@@ -14,7 +14,9 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -153,6 +155,44 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// Calculate syscall times
+    pub fn add_current_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall_id] += 1;
+    }
+
+    /// Get the number of current task's syscall
+    pub fn get_current_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times.clone()
+    }
+
+    fn alloc_new_frames(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].alloc_new_frames(start, end, permission);
+    }
+
+    fn dealloc_frames(&self, start: VirtAddr, end: VirtAddr) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].dealloc_frames(start, end);
+    }
+
+    fn check_allocated(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].check_allocated(start, end)
+    }
+
+    fn check_all_allocated(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].check_all_allocated(start, end)
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +241,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// alloc new frames
+pub fn alloc_new_frames(start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+    TASK_MANAGER.alloc_new_frames(start, end, permission);
+}
+
+/// dealloc frames
+pub fn dealloc_frames(start: VirtAddr, end: VirtAddr) {
+    TASK_MANAGER.dealloc_frames(start, end);
+}
+
+/// check allocated
+pub fn check_allocated(start: VirtAddr, end: VirtAddr) -> bool {
+    TASK_MANAGER.check_allocated(start, end)
+}
+
+/// check all allocated
+pub fn check_all_allocated(start: VirtAddr, end: VirtAddr) -> bool {
+    TASK_MANAGER.check_all_allocated(start, end)
 }
