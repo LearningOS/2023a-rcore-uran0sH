@@ -21,7 +21,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::loader::get_app_data_by_name;
+use crate::{
+    loader::get_app_data_by_name,
+    mm::{MapPermission, VirtAddr},
+};
 use alloc::sync::Arc;
 use lazy_static::*;
 pub use manager::{fetch_task, TaskManager};
@@ -114,4 +117,40 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+}
+
+/// alloc new frames
+pub fn alloc_new_frames(start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+    let task = current_task().unwrap();
+    // let mut task_inner = task.acquire_inner_lock();
+    task.alloc_new_frames(start, end, permission)
+}
+
+/// dealloc frames
+pub fn dealloc_frames(start: VirtAddr, end: VirtAddr) {
+    let task = current_task().unwrap();
+    // let mut task_inner = task.acquire_inner_lock();
+    task.dealloc_frames(start, end);
+}
+
+/// check allocated
+pub fn check_allocated(start: VirtAddr, end: VirtAddr) -> bool {
+    let task = current_task().unwrap();
+    // let task_inner = task.acquire_inner_lock();
+    task.check_allocated(start, end)
+}
+
+/// check all allocated
+pub fn check_all_allocated(start: VirtAddr, end: VirtAddr) -> bool {
+    let task = current_task().unwrap();
+    // let task_inner = task.acquire_inner_lock();
+    task.check_all_allocated(start, end)
+}
+
+/// set task priority
+pub fn set_priority(prio: isize) -> isize {
+    let task = current_task().unwrap();
+    // let mut task_inner = task.acquire_inner_lock();
+    task.inner_exclusive_access().priority = prio;
+    prio
 }

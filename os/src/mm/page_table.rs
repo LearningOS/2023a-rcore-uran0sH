@@ -202,6 +202,7 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
     }
     string
 }
+
 /// Translate a ptr[u8] array through page table and return a mutable reference of T
 pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
     //trace!("into translated_refmut!");
@@ -212,4 +213,18 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+
+/// Translate a mut ptr to a mut ptr(pa) through page table
+pub fn translate_mut_ptr<T>(token: usize, ptr: *mut T) -> Option<*mut T> {
+    let page_table: PageTable = PageTable::from_token(token);
+
+    let ptr_va: usize = ptr as usize;
+    page_table
+        .find_pte(VirtAddr::from(ptr_va).floor())
+        .map(|e| {
+            let ppn = e.ppn();
+            let pa: PhysAddr = ppn.into();
+            (pa.0 + VirtAddr::from(ptr_va).page_offset()) as *mut T
+        })
 }

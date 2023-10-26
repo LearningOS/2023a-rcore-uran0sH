@@ -1,8 +1,8 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -68,6 +68,15 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Priority
+    pub priority: isize,
+
+    /// Stride
+    pub stride: isize,
+
+    /// The task's syscall times.
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +127,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    priority: 16,
+                    stride: 0,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         };
@@ -191,6 +203,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority: 16,
+                    stride: 0,
+                    syscall_times: [0; MAX_SYSCALL_NUM],
                 })
             },
         });
@@ -235,6 +250,60 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// alloc new frames
+    pub fn alloc_new_frames(&self, start: VirtAddr, end: VirtAddr, permission: MapPermission) {
+        self.inner
+            .exclusive_access()
+            .memory_set
+            .insert_framed_area(start, end, permission);
+    }
+
+    /// dealloc frames
+    pub fn dealloc_frames(&self, start: VirtAddr, end: VirtAddr) {
+        self.inner
+            .exclusive_access()
+            .memory_set
+            .delete_framed_area(start, end);
+    }
+
+    /// check allocated
+    pub fn check_allocated(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        self.inner
+            .exclusive_access()
+            .memory_set
+            .check_allocated(start, end)
+    }
+
+    /// check all allocated
+    pub fn check_all_allocated(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        self.inner
+            .exclusive_access()
+            .memory_set
+            .check_all_allocated(start, end)
+    }
+
+    /// Calculate syscall times
+    pub fn add_current_syscall_times(&self, syscall_id: usize) {
+        self.inner.exclusive_access().syscall_times[syscall_id] += 1;
+    }
+
+    /// Get the number of current task's syscall
+    pub fn get_current_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        self.inner.exclusive_access().syscall_times.clone()
+    }
+
+    /// spawn
+    pub fn spawn(self: &Arc<TaskControlBlock>, elf_data: &[u8]) -> Arc<TaskControlBlock> {
+        // ---- hold parent PCB lock
+        let mut parent_inner = self.inner_exclusive_access();
+        let task_control_block = Arc::new(TaskControlBlock::new(elf_data));
+        let mut inner = task_control_block.inner_exclusive_access();
+        inner.parent = Some(Arc::downgrade(self));
+        parent_inner.children.push(task_control_block.clone());
+        drop(inner);
+        task_control_block
     }
 }
 
